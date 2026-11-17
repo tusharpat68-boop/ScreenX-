@@ -83,6 +83,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel()
 ) {
     val context = LocalContext.current
+    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?" }
     val config by viewModel.config.collectAsStateWithLifecycle()
     val floating by viewModel.floating.collectAsStateWithLifecycle()
     val facecam by viewModel.facecam.collectAsStateWithLifecycle()
@@ -558,10 +559,6 @@ fun SettingsScreen(
         }
 
         // ---------------- Other ----------------
-        val version = remember {
-            runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
-                .getOrNull() ?: "?"
-        }
         SettingsCard(stringResource(R.string.sec_other)) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
