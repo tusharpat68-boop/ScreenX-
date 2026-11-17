@@ -83,7 +83,10 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel()
 ) {
     val context = LocalContext.current
-    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?" }
+    val version = remember {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
+            .getOrNull() ?: "?"
+    }
     val config by viewModel.config.collectAsStateWithLifecycle()
     val floating by viewModel.floating.collectAsStateWithLifecycle()
     val facecam by viewModel.facecam.collectAsStateWithLifecycle()

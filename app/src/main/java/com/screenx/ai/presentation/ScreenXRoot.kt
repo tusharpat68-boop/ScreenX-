@@ -8,7 +8,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.screenx.ai.navigation.Routes
 import com.screenx.ai.navigation.Screen
 import com.screenx.ai.navigation.ScreenXNavHost
 import com.screenx.ai.navigation.navigateToTopLevel
@@ -26,9 +28,13 @@ fun ScreenXRoot() {
         if (quickStart) navController.navigateToTopLevel(Screen.Home.route)
     }
 
+    // The editor is full screen, like a video editing app: no bottom bar there.
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val inEditor = backStackEntry?.destination?.route == Routes.EDIT_PATTERN
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = { ScreenXBottomBar(navController) }
+        bottomBar = { if (!inEditor) ScreenXBottomBar(navController) }
     ) { innerPadding ->
         ScreenXNavHost(navController, Modifier.padding(innerPadding))
     }

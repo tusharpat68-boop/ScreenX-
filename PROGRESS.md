@@ -12,3 +12,4 @@
 - [x] PHASE 10 Built-in video editor (not yet build-verified)
 - [x] PHASE 11 Advanced settings and customization (not yet build-verified)
 - [x] PHASE 12 Testing, bug fixing, optimization, APK generation (static checks and unit tests added; needs your first real build and phone test)
+- [x] PHASE 13 CapCut-style video editor: thumbnail timeline with a fixed playhead, split / delete clips, per-clip speed and volume, filters, brightness / contrast / saturation, text overlays, canvas (crop + rotate), undo / redo, full-screen layout (not build-verified)

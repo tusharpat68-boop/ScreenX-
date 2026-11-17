@@ -114,6 +114,8 @@ dependencies {
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.transformer)
     implementation(libs.androidx.media3.effect)
+    // Used directly by the editor (ImmutableList for text overlays).
+    implementation(libs.guava)
 
     testImplementation(libs.junit)
 }
