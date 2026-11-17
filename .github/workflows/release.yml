@@ -1,0 +1,49 @@
+name: Build release APK
+
+# Run it by hand: GitHub > Actions > "Build release APK" > Run workflow.
+# If you added the four signing secrets (see BUILD.md) the APK is signed with your key.
+# Without them it is signed with the debug key so you can still install and test it.
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+      - name: Restore keystore (if secrets exist)
+        env:
+          KEYSTORE_B64: ${{ secrets.SCREENX_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/screenx.jks"
+            echo "SCREENX_STORE_FILE=$RUNNER_TEMP/screenx.jks" >> "$GITHUB_ENV"
+            echo "SIGNED=yes" >> "$GITHUB_ENV"
+          else
+            echo "SIGNED=debugkey" >> "$GITHUB_ENV"
+          fi
+      - name: Build release APK
+        env:
+          SCREENX_STORE_PASSWORD: ${{ secrets.SCREENX_STORE_PASSWORD }}
+          SCREENX_KEY_ALIAS: ${{ secrets.SCREENX_KEY_ALIAS }}
+          SCREENX_KEY_PASSWORD: ${{ secrets.SCREENX_KEY_PASSWORD }}
+        run: |
+          if [ "$SIGNED" = "yes" ]; then
+            gradle :app:assembleRelease --stacktrace -PversionCode=${{ github.run_number }}
+          else
+            gradle :app:assembleRelease --stacktrace -PversionCode=${{ github.run_number }} -Pscreenx.debugSignRelease=true
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenx-release-apk
+          path: app/build/outputs/apk/release/*.apk
