@@ -37,7 +37,13 @@ import com.screenx.ai.editor.ExportQuality
 import com.screenx.ai.editor.ExportState
 import com.screenx.ai.editor.FilterPreset
 import com.screenx.ai.editor.LookSettings
+import com.screenx.ai.editor.ImportKind
+import com.screenx.ai.editor.ImportedMedia
 import com.screenx.ai.editor.Segment
+import com.screenx.ai.editor.TimelineClip
+import com.screenx.ai.editor.TimelineOps
+import com.screenx.ai.editor.Track
+import com.screenx.ai.editor.TrackKind
 import com.screenx.ai.editor.TextItem
 import com.screenx.ai.storage.ExportStorage
 import com.screenx.ai.storage.RecordingStorage
@@ -73,7 +79,8 @@ private class Snapshot(
     val adjust: Adjust,
     val texts: List<TextItem>,
     val rotationCw: Int,
-    val crop: CropPreset
+    val crop: CropPreset,
+    val tracks: List<Track>
 )
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -203,7 +210,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     // ---- undo / redo ----
 
-    private fun snapshot(s: EditorUiState) = Snapshot(s.segments, s.filter, s.adjust, s.texts, s.rotationCw, s.crop)
+    private fun snapshot(s: EditorUiState) =
+        Snapshot(s.segments, s.filter, s.adjust, s.texts, s.rotationCw, s.crop, s.tracks)
 
     /**
      * Applies an edit and remembers the previous state for undo.
@@ -232,6 +240,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         texts = snap.texts,
         rotationCw = snap.rotationCw,
         crop = snap.crop,
+        tracks = snap.tracks,
+        selectedClipId = cur.selectedClipId?.takeIf { id -> TimelineOps.find(snap.tracks, id) != null },
         selectedId = cur.selectedId?.takeIf { id -> snap.segments.any { it.id == id } },
         selectedTextId = cur.selectedTextId?.takeIf { id -> snap.texts.any { it.id == id } }
     )
@@ -255,7 +265,77 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     // ---- clips ----
 
     fun select(id: Long?) {
-        _state.update { it.copy(selectedId = id) }
+        _state.update { it.copy(selectedId = id, selectedClipId = if (id != null) null else it.selectedClipId) }
+    }
+
+    // ---- extra tracks (clips placed freely on the timeline) ----
+
+    fun selectClip(id: Long?) {
+        _state.update { it.copy(selectedClipId = id, selectedId = if (id != null) null else it.selectedId) }
+    }
+
+    /** Places an imported file on a track of [kind] at timeline time [startMs]. Returns false for a wrong kind. */
+    fun addClip(media: ImportedMedia, kind: TrackKind, startMs: Long): Boolean {
+        if (!TimelineOps.compatible(media.kind, kind)) return false
+        val image = media.kind == ImportKind.IMAGE
+        val length = if (image) TimelineOps.IMAGE_DEFAULT_MS else media.durationMs
+        if (length <= 0L) return false
+        val clip = TimelineClip(
+            id = nextId++,
+            trackId = 0L,
+            uri = media.uri.toString(),
+            name = media.name,
+            kind = media.kind,
+            startMs = startMs.coerceAtLeast(0L),
+            inMs = 0L,
+            lengthMs = length,
+            mediaDurationMs = if (image) 0L else media.durationMs
+        )
+        val newTrackId = nextId++
+        mutate { s ->
+            s.copy(
+                tracks = TimelineOps.add(s.tracks, kind, clip, newTrackId),
+                selectedClipId = clip.id,
+                selectedId = null
+            )
+        }
+        return true
+    }
+
+    fun deleteClip(id: Long) {
+        if (TimelineOps.find(_state.value.tracks, id) == null) return
+        mutate { s -> s.copy(tracks = TimelineOps.delete(s.tracks, id), selectedClipId = null) }
+    }
+
+    /** Copies a clip right after the original (on a free track of the same kind). */
+    fun duplicateClip(id: Long) {
+        val st = _state.value
+        val clip = TimelineOps.find(st.tracks, id) ?: return
+        val kind = st.tracks.firstOrNull { it.id == clip.trackId }?.kind ?: return
+        val copy = clip.copy(id = nextId++, startMs = clip.endMs)
+        val newTrackId = nextId++
+        mutate { s -> s.copy(tracks = TimelineOps.add(s.tracks, kind, copy, newTrackId), selectedClipId = copy.id) }
+    }
+
+    /** Cuts a clip at timeline time [atMs]. Returns false when a piece would be too short. */
+    fun splitClip(id: Long, atMs: Long): Boolean {
+        val newId = nextId
+        val result = TimelineOps.split(_state.value.tracks, id, atMs, newId) ?: return false
+        nextId++
+        mutate { s -> s.copy(tracks = result, selectedClipId = newId) }
+        return true
+    }
+
+    fun moveClip(id: Long, startMs: Long) {
+        mutate(continuous = true) { s -> s.copy(tracks = TimelineOps.move(s.tracks, id, startMs)) }
+    }
+
+    fun trimClipStart(id: Long, startMs: Long) {
+        mutate(continuous = true) { s -> s.copy(tracks = TimelineOps.trimStart(s.tracks, id, startMs)) }
+    }
+
+    fun trimClipEnd(id: Long, endMs: Long) {
+        mutate(continuous = true) { s -> s.copy(tracks = TimelineOps.trimEnd(s.tracks, id, endMs)) }
     }
 
     /** Cuts the clip under timeline time [timelineMs] in two. Returns false when a piece would be too short. */

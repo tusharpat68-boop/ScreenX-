@@ -5,7 +5,11 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,7 +43,14 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.Crop
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.ZoomIn
+import androidx.compose.material.icons.rounded.ZoomOut
+import androidx.compose.material.icons.rounded.Image as ImageIcon
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
@@ -74,6 +86,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -93,6 +106,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -118,7 +132,15 @@ import com.screenx.ai.editor.ExportQuality
 import com.screenx.ai.editor.ExportState
 import com.screenx.ai.editor.FilterPreset
 import com.screenx.ai.editor.LookSettings
+import com.screenx.ai.editor.ImportKind
+import com.screenx.ai.editor.ImportedMedia
+import com.screenx.ai.editor.MediaImporter
+import com.screenx.ai.editor.ProjectMediaPool
 import com.screenx.ai.editor.Segment
+import com.screenx.ai.editor.TimelineClip
+import com.screenx.ai.editor.TimelineOps
+import com.screenx.ai.editor.Track
+import com.screenx.ai.editor.TrackKind
 import com.screenx.ai.editor.TextItem
 import com.screenx.ai.utils.TimeFormat
 import kotlinx.coroutines.delay
@@ -136,10 +158,11 @@ private val CcLane = Color(0xFF131316)
 private val CcTextClip = Color(0xFF7C4DFF)
 private val CcAudioClip = Color(0xFF1FA39E)
 
-/** How wide one second of the timeline is. */
-private const val DP_PER_SEC = 44f
+/** Timeline zoom steps: how wide one second is, in dp. */
+private val ZOOM_STEPS = listOf(12f, 22f, 44f, 88f, 176f)
+private const val DEFAULT_ZOOM_INDEX = 2
 
-private enum class Tool { NONE, SPEED, VOLUME, FILTERS, ADJUST, TEXT, CANVAS }
+private enum class Tool { NONE, ADD, SPEED, VOLUME, FILTERS, ADJUST, TEXT, CANVAS }
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f)
 private val TEXT_COLORS = listOf(
@@ -276,6 +299,8 @@ private fun EditorContent(
     }
 
     var tool by remember { mutableStateOf(Tool.NONE) }
+    var zoomIdx by remember { mutableIntStateOf(DEFAULT_ZOOM_INDEX) }
+    val pool by ProjectMediaPool.items.collectAsStateWithLifecycle()
     var showExport by remember { mutableStateOf(false) }
     fun closeTool() {
         viewModel.endGesture()
@@ -429,6 +454,15 @@ private fun EditorContent(
                     segments = ui.segments,
                     texts = ui.texts,
                     hasAudio = ui.hasAudio,
+                    tracks = ui.tracks,
+                    pool = pool,
+                    selectedClipId = ui.selectedClipId,
+                    zoomDpPerSec = ZOOM_STEPS[zoomIdx],
+                    onZoom = { d -> zoomIdx = (zoomIdx + d).coerceIn(0, ZOOM_STEPS.lastIndex) },
+                    onSelectClip = { id -> viewModel.selectClip(if (ui.selectedClipId == id) null else id) },
+                    onMoveClip = { id, start -> viewModel.moveClip(id, start) },
+                    onTrimClipStart = { id, start -> viewModel.trimClipStart(id, start) },
+                    onTrimClipEnd = { id, end -> viewModel.trimClipEnd(id, end) },
                     thumbs = thumbs,
                     sourceDurationMs = ui.durationMs,
                     selectedId = ui.selectedId,
@@ -455,15 +489,30 @@ private fun EditorContent(
                             .padding(horizontal = 4.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.Start
                     ) {
+                        ToolButton(Icons.Rounded.Add, stringResource(R.string.tool_add), !busy) { tool = Tool.ADD }
                         ToolButton(Icons.Rounded.ContentCut, stringResource(R.string.tool_split), !busy) {
-                            if (!viewModel.split(timelineMs)) {
-                                Toast.makeText(context, splitFailText, Toast.LENGTH_SHORT).show()
+                            val clipId = ui.selectedClipId
+                            val ok = if (clipId != null) {
+                                viewModel.splitClip(clipId, timelineMs)
+                            } else {
+                                viewModel.split(timelineMs)
+                            }
+                            if (!ok) Toast.makeText(context, splitFailText, Toast.LENGTH_SHORT).show()
+                        }
+                        val selectedClip = ui.selectedClipId
+                        if (selectedClip != null) {
+                            ToolButton(Icons.Rounded.ContentCopy, stringResource(R.string.tool_duplicate), !busy) {
+                                viewModel.duplicateClip(selectedClip)
                             }
                         }
                         ToolButton(Icons.Rounded.Delete, stringResource(R.string.tool_delete), !busy) {
-                            val id = target?.id
-                            if (id == null || !viewModel.deleteSegment(id)) {
-                                Toast.makeText(context, deleteFailText, Toast.LENGTH_SHORT).show()
+                            if (selectedClip != null) {
+                                viewModel.deleteClip(selectedClip)
+                            } else {
+                                val id = target?.id
+                                if (id == null || !viewModel.deleteSegment(id)) {
+                                    Toast.makeText(context, deleteFailText, Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                         ToolButton(Icons.Rounded.Speed, stringResource(R.string.tool_speed), !busy) { tool = Tool.SPEED }
@@ -477,6 +526,7 @@ private fun EditorContent(
                     ToolPanel(
                         title = stringResource(
                             when (tool) {
+                                Tool.ADD -> R.string.tool_add
                                 Tool.SPEED -> R.string.tool_speed
                                 Tool.VOLUME -> R.string.tool_volume
                                 Tool.FILTERS -> R.string.tool_filters
@@ -488,6 +538,7 @@ private fun EditorContent(
                         onDone = { closeTool() }
                     ) {
                         when (tool) {
+                            Tool.ADD -> AddPanel(pool, timelineMs, viewModel)
                             Tool.SPEED -> SpeedPanel(target) { id, v -> viewModel.setSpeed(id, v) }
                             Tool.VOLUME -> VolumePanel(target, ui.hasAudio, viewModel)
                             Tool.FILTERS -> FiltersPanel(ui.filter) { viewModel.setFilter(it) }
@@ -654,13 +705,27 @@ private fun EditorContent(
 private val RULER_H = 20.dp
 private val MAIN_H = 52.dp
 private val LANE_H = 24.dp
+private val CLIP_LANE_H = 32.dp
 private val LANE_GAP = 4.dp
+private val LANES_VIEW_H = 148.dp
+
+/** The widest the timeline may be, in pixels (a layout cannot be much wider than 260 000 px). */
+private const val MAX_CONTENT_PX = 240_000f
 
 @Composable
 private fun Timeline(
     segments: List<Segment>,
     texts: List<TextItem>,
     hasAudio: Boolean,
+    tracks: List<Track>,
+    pool: List<ImportedMedia>,
+    selectedClipId: Long?,
+    zoomDpPerSec: Float,
+    onZoom: (Int) -> Unit,
+    onSelectClip: (Long) -> Unit,
+    onMoveClip: (Long, Long) -> Unit,
+    onTrimClipStart: (Long, Long) -> Unit,
+    onTrimClipEnd: (Long, Long) -> Unit,
     thumbs: List<Bitmap?>,
     sourceDurationMs: Long,
     selectedId: Long?,
@@ -673,17 +738,22 @@ private fun Timeline(
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    val pxPerMs = with(density) { DP_PER_SEC.dp.toPx() } / 1000f
     val total = EditTimeline.total(segments)
+    // The timeline is as long as the main video or the last extra clip, whichever is later.
+    val endMs = maxOf(total, TimelineOps.end(tracks))
+    val maxDpPerSec = (MAX_CONTENT_PX / density.density) / (endMs / 1000f).coerceAtLeast(1f)
+    val dpPerSec = minOf(zoomDpPerSec, maxDpPerSec)
+    val pxPerMs = with(density) { dpPerSec.dp.toPx() } / 1000f
     val scroll = rememberScrollState()
+    val vScroll = rememberScrollState()
     val seekNow by rememberUpdatedState(onSeek)
     val totalNow by rememberUpdatedState(total)
     val images = remember(thumbs) { thumbs.map { it?.asImageBitmap() } }
     // True while the strip is being moved by the player (not by a finger).
     val followFlag = remember { BooleanArray(1) }
 
-    // Keep the strip under the playhead while playing or after a seek.
-    LaunchedEffect(timelineMs, total) {
+    // Keep the strip under the playhead while playing, after a seek or after zooming.
+    LaunchedEffect(timelineMs, total, pxPerMs) {
         if (!scroll.isScrollInProgress) {
             followFlag[0] = true
             try {
@@ -702,51 +772,81 @@ private fun Timeline(
         }
     }
 
-    val contentHeight = RULER_H + MAIN_H + LANE_H * 2 + LANE_GAP * 3
-    BoxWithConstraints(modifier = modifier.fillMaxWidth().height(contentHeight)) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth().height(RULER_H + LANE_GAP + LANES_VIEW_H)) {
         val half = maxWidth / 2
-        val contentWidth = (total / 1000f * DP_PER_SEC).dp
-        Row(
-            modifier = Modifier.fillMaxHeight().horizontalScroll(scroll)
-        ) {
+        val contentWidth = (endMs / 1000f * dpPerSec).dp
+        Row(modifier = Modifier.fillMaxHeight().horizontalScroll(scroll)) {
             Spacer(Modifier.width(half))
             Column(modifier = Modifier.width(contentWidth).fillMaxHeight()) {
-                TimeRuler(total, Modifier.fillMaxWidth().height(RULER_H))
+                TimeRuler(endMs, dpPerSec, Modifier.fillMaxWidth().height(RULER_H))
                 Spacer(Modifier.height(LANE_GAP))
-                // Main video track
-                Row(modifier = Modifier.height(MAIN_H)) {
-                    segments.forEach { seg ->
-                        key(seg.id) {
-                            SegmentBlock(
-                                seg = seg,
-                                images = images,
-                                sourceDurationMs = sourceDurationMs,
-                                selected = seg.id == selectedId,
+                // The lanes scroll up and down when there are more than fit.
+                Column(modifier = Modifier.fillMaxWidth().height(LANES_VIEW_H).verticalScroll(vScroll)) {
+                    // Main video track
+                    Row(modifier = Modifier.height(MAIN_H)) {
+                        segments.forEach { seg ->
+                            key(seg.id) {
+                                SegmentBlock(
+                                    seg = seg,
+                                    dpPerSec = dpPerSec,
+                                    images = images,
+                                    sourceDurationMs = sourceDurationMs,
+                                    selected = seg.id == selectedId,
+                                    pxPerMs = pxPerMs,
+                                    onSelect = { onSelect(seg.id) },
+                                    onTrim = { start, end -> onTrim(seg.id, start, end) },
+                                    onTrimPreview = onTrimPreview,
+                                    onTrimEnd = onTrimEnd
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(LANE_GAP))
+                    TextLane(texts, Modifier.fillMaxWidth().height(LANE_H))
+                    Spacer(Modifier.height(LANE_GAP))
+                    AudioLane(segments, hasAudio, dpPerSec, Modifier.fillMaxWidth().height(LANE_H))
+                    tracks.forEach { track ->
+                        key(track.id) {
+                            Spacer(Modifier.height(LANE_GAP))
+                            ClipLane(
+                                track = track,
+                                selectedClipId = selectedClipId,
+                                pool = pool,
+                                dpPerSec = dpPerSec,
                                 pxPerMs = pxPerMs,
-                                onSelect = { onSelect(seg.id) },
-                                onTrim = { start, end -> onTrim(seg.id, start, end) },
-                                onTrimPreview = onTrimPreview,
-                                onTrimEnd = onTrimEnd
+                                onSelect = onSelectClip,
+                                onMove = onMoveClip,
+                                onTrimStart = onTrimClipStart,
+                                onTrimEnd = onTrimClipEnd,
+                                onGestureEnd = onTrimEnd,
+                                modifier = Modifier.fillMaxWidth().height(CLIP_LANE_H)
                             )
                         }
                     }
                 }
-                Spacer(Modifier.height(LANE_GAP))
-                TextLane(texts, Modifier.fillMaxWidth().height(LANE_H))
-                Spacer(Modifier.height(LANE_GAP))
-                AudioLane(segments, hasAudio, Modifier.fillMaxWidth().height(LANE_H))
             }
             Spacer(Modifier.width(half))
         }
 
-        // Track icons stay at the left edge while the clips slide underneath.
-        Column(modifier = Modifier.align(Alignment.TopStart)) {
-            Spacer(Modifier.height(RULER_H + LANE_GAP))
+        // Track icons stay at the left edge (and scroll up and down together with the lanes).
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = RULER_H + LANE_GAP)
+                .height(LANES_VIEW_H)
+                .verticalScroll(vScroll)
+        ) {
             TrackIcon(Icons.Rounded.Videocam, MAIN_H)
             Spacer(Modifier.height(LANE_GAP))
             TrackIcon(Icons.Rounded.TextFields, LANE_H)
             Spacer(Modifier.height(LANE_GAP))
             TrackIcon(Icons.Rounded.MusicNote, LANE_H)
+            tracks.forEach { track ->
+                key(track.id) {
+                    Spacer(Modifier.height(LANE_GAP))
+                    TrackIcon(trackIcon(track.kind), CLIP_LANE_H)
+                }
+            }
         }
 
         // The playhead stays in the middle, the clips slide under it.
@@ -763,7 +863,56 @@ private fun Timeline(
                 .size(10.dp)
                 .background(Color.White, CircleShape)
         )
+
+        // Zoom
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .height(28.dp)
+                .background(CcBg.copy(alpha = 0.9f), RoundedCornerShape(bottomStart = 8.dp)),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.ZoomOut,
+                contentDescription = stringResource(R.string.zoom_out),
+                tint = Color.White,
+                modifier = Modifier.size(width = 36.dp, height = 28.dp).clickable { onZoom(-1) }.padding(6.dp)
+            )
+            Icon(
+                Icons.Rounded.ZoomIn,
+                contentDescription = stringResource(R.string.zoom_in),
+                tint = Color.White,
+                modifier = Modifier.size(width = 36.dp, height = 28.dp).clickable { onZoom(1) }.padding(6.dp)
+            )
+        }
     }
+}
+
+private fun trackColor(kind: TrackKind): Color = when (kind) {
+    TrackKind.VIDEO -> Color(0xFF3D7BFF)
+    TrackKind.OVERLAY -> Color(0xFFFF8A3D)
+    TrackKind.IMAGE -> Color(0xFF34C759)
+    TrackKind.AUDIO -> Color(0xFF1FA39E)
+    TrackKind.VOICEOVER -> Color(0xFFFF2D95)
+    TrackKind.SFX -> Color(0xFFE5B800)
+}
+
+private fun trackIcon(kind: TrackKind): ImageVector = when (kind) {
+    TrackKind.VIDEO -> Icons.Rounded.Videocam
+    TrackKind.OVERLAY -> Icons.Rounded.Layers
+    TrackKind.IMAGE -> Icons.Rounded.ImageIcon
+    TrackKind.AUDIO -> Icons.Rounded.MusicNote
+    TrackKind.VOICEOVER -> Icons.Rounded.Mic
+    TrackKind.SFX -> Icons.Rounded.GraphicEq
+}
+
+private fun trackName(kind: TrackKind): Int = when (kind) {
+    TrackKind.VIDEO -> R.string.track_video
+    TrackKind.OVERLAY -> R.string.track_overlay
+    TrackKind.IMAGE -> R.string.track_image
+    TrackKind.AUDIO -> R.string.track_audio
+    TrackKind.VOICEOVER -> R.string.track_voiceover
+    TrackKind.SFX -> R.string.track_sfx
 }
 
 @Composable
@@ -779,19 +928,27 @@ private fun TrackIcon(icon: ImageVector, height: androidx.compose.ui.unit.Dp) {
     }
 }
 
-/** Time marks: a small tick every half second, a label every two seconds. */
+/** How many seconds apart the time labels are, so they never overlap at the current zoom. */
+private fun labelStepSeconds(dpPerSec: Float): Int {
+    val need = 52f / dpPerSec
+    return listOf(1, 2, 5, 10, 30, 60).firstOrNull { it >= need } ?: 60
+}
+
+/** Time marks: small ticks and a label every few seconds, depending on the zoom. */
 @Composable
-private fun TimeRuler(totalMs: Long, modifier: Modifier = Modifier) {
+private fun TimeRuler(totalMs: Long, dpPerSec: Float, modifier: Modifier = Modifier) {
     val paint = remember {
         android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF9A9AA2.toInt() }
     }
     Canvas(modifier = modifier) {
-        val pxPerSec = DP_PER_SEC.dp.toPx()
+        val pxPerSec = dpPerSec.dp.toPx()
         paint.textSize = 9.sp.toPx()
-        val halfSteps = (totalMs / 500L).toInt()
-        for (i in 0..halfSteps) {
-            val x = i * 0.5f * pxPerSec
-            val tick = if (i % 2 == 0) 7.dp.toPx() else 4.dp.toPx()
+        val minorMs = if (dpPerSec >= 30f) 500L else 1000L
+        val minorCount = (totalMs / minorMs).toInt()
+        for (i in 0..minorCount) {
+            val x = i * (minorMs / 1000f) * pxPerSec
+            val isSecond = (i * minorMs) % 1000L == 0L
+            val tick = if (isSecond) 7.dp.toPx() else 4.dp.toPx()
             drawLine(
                 color = CcMuted,
                 start = Offset(x, size.height - tick),
@@ -800,7 +957,7 @@ private fun TimeRuler(totalMs: Long, modifier: Modifier = Modifier) {
             )
         }
         val seconds = (totalMs / 1000L).toInt()
-        for (s in 0..seconds step 2) {
+        for (s in 0..seconds step labelStepSeconds(dpPerSec)) {
             drawIntoCanvas {
                 it.nativeCanvas.drawText(
                     TimeFormat.elapsed(s * 1000L),
@@ -837,7 +994,7 @@ private fun TextLane(texts: List<TextItem>, modifier: Modifier = Modifier) {
 
 /** The audio of the video clips. It follows the clips; a muted clip is grey. */
 @Composable
-private fun AudioLane(segments: List<Segment>, hasAudio: Boolean, modifier: Modifier = Modifier) {
+private fun AudioLane(segments: List<Segment>, hasAudio: Boolean, dpPerSec: Float, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(6.dp)
     Row(modifier = modifier.clip(shape).background(CcLane)) {
         if (hasAudio) {
@@ -846,7 +1003,7 @@ private fun AudioLane(segments: List<Segment>, hasAudio: Boolean, modifier: Modi
                     val muted = seg.volume == 0f
                     Box(
                         modifier = Modifier
-                            .width((seg.timelineMs / 1000f * DP_PER_SEC).dp)
+                            .width((seg.timelineMs / 1000f * dpPerSec).dp)
                             .fillMaxHeight()
                             .padding(end = 2.dp)
                             .background(
@@ -860,9 +1017,123 @@ private fun AudioLane(segments: List<Segment>, hasAudio: Boolean, modifier: Modi
     }
 }
 
+/** One extra track: its clips sit at their own time on the timeline. */
+@Composable
+private fun ClipLane(
+    track: Track,
+    selectedClipId: Long?,
+    pool: List<ImportedMedia>,
+    dpPerSec: Float,
+    pxPerMs: Float,
+    onSelect: (Long) -> Unit,
+    onMove: (Long, Long) -> Unit,
+    onTrimStart: (Long, Long) -> Unit,
+    onTrimEnd: (Long, Long) -> Unit,
+    onGestureEnd: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(6.dp)
+    Box(modifier = modifier.clip(shape).background(CcLane)) {
+        track.clips.forEach { clip ->
+            key(clip.id) {
+                val thumb = remember(clip.uri, pool) {
+                    pool.firstOrNull { it.uri.toString() == clip.uri }?.thumb?.asImageBitmap()
+                }
+                ClipBlock(
+                    clip = clip,
+                    trackKind = track.kind,
+                    selected = clip.id == selectedClipId,
+                    thumb = thumb,
+                    dpPerSec = dpPerSec,
+                    pxPerMs = pxPerMs,
+                    onSelect = { onSelect(clip.id) },
+                    onMove = { start -> onMove(clip.id, start) },
+                    onTrimStart = { start -> onTrimStart(clip.id, start) },
+                    onTrimEnd = { end -> onTrimEnd(clip.id, end) },
+                    onGestureEnd = onGestureEnd
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ClipBlock(
+    clip: TimelineClip,
+    trackKind: TrackKind,
+    selected: Boolean,
+    thumb: ImageBitmap?,
+    dpPerSec: Float,
+    pxPerMs: Float,
+    onSelect: () -> Unit,
+    onMove: (Long) -> Unit,
+    onTrimStart: (Long) -> Unit,
+    onTrimEnd: (Long) -> Unit,
+    onGestureEnd: () -> Unit
+) {
+    val clipNow by rememberUpdatedState(clip)
+    val ppmNow by rememberUpdatedState(pxPerMs)
+    val moveNow by rememberUpdatedState(onMove)
+    val gestureEndNow by rememberUpdatedState(onGestureEnd)
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = Modifier
+            .offset(x = (clip.startMs / 1000f * dpPerSec).dp)
+            .width((clip.lengthMs / 1000f * dpPerSec).dp)
+            .fillMaxHeight()
+            .then(if (selected) Modifier.border(2.dp, Color.White, shape) else Modifier)
+            .clip(shape)
+            .background(trackColor(trackKind).copy(alpha = 0.85f))
+            .clickable { onSelect() }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragEnd = { gestureEndNow() },
+                    onDragCancel = { gestureEndNow() }
+                ) { change, dragAmount ->
+                    change.consume()
+                    moveNow(clipNow.startMs + (dragAmount / ppmNow).toLong())
+                }
+            }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(start = if (selected) 16.dp else 0.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (thumb != null) {
+                Image(
+                    bitmap = thumb,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxHeight().width(CLIP_LANE_H)
+                )
+            }
+            Text(
+                text = clip.name,
+                color = Color.White,
+                fontSize = 10.sp,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        }
+        if (selected) {
+            TrimHandle(
+                modifier = Modifier.align(Alignment.CenterStart),
+                onDrag = { dx -> onTrimStart(clipNow.startMs + (dx / ppmNow).toLong()) },
+                onEnd = onGestureEnd
+            )
+            TrimHandle(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                onDrag = { dx -> onTrimEnd(clipNow.endMs + (dx / ppmNow).toLong()) },
+                onEnd = onGestureEnd
+            )
+        }
+    }
+}
+
 @Composable
 private fun SegmentBlock(
     seg: Segment,
+    dpPerSec: Float,
     images: List<ImageBitmap?>,
     sourceDurationMs: Long,
     selected: Boolean,
@@ -874,7 +1145,7 @@ private fun SegmentBlock(
 ) {
     val segNow by rememberUpdatedState(seg)
     val ppmNow by rememberUpdatedState(pxPerMs)
-    val widthDp = (seg.timelineMs / 1000f * DP_PER_SEC).dp
+    val widthDp = (seg.timelineMs / 1000f * dpPerSec).dp
     val shape = RoundedCornerShape(6.dp)
 
     Box(
@@ -1022,6 +1293,83 @@ private fun TrimHandle(modifier: Modifier, onDrag: (Float) -> Unit, onEnd: () ->
 // ---------------------------------------------------------------------------------------------
 // Toolbar and tool panels
 // ---------------------------------------------------------------------------------------------
+
+/** Puts imported media on extra tracks at the playhead, and lets you import more. */
+@Composable
+private fun AddPanel(pool: List<ImportedMedia>, startMs: Long, vm: EditorViewModel) {
+    val importVm: ImportViewModel = viewModel()
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) {
+        importVm.import(it)
+    }
+    val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
+        importVm.import(it)
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = {
+                gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+            }
+        ) { Text(stringResource(R.string.import_gallery)) }
+        OutlinedButton(onClick = { files.launch(MediaImporter.FILE_MIME_TYPES) }) {
+            Text(stringResource(R.string.import_files))
+        }
+    }
+    if (pool.isEmpty()) HintText(stringResource(R.string.add_empty))
+    pool.forEach { m ->
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(56.dp)
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(CcChip),
+                contentAlignment = Alignment.Center
+            ) {
+                val bmp = m.thumb
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (m.kind == ImportKind.AUDIO) Icons.Rounded.MusicNote else Icons.Rounded.Videocam,
+                        contentDescription = null,
+                        tint = CcMuted,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+                Text(text = m.name, color = Color.White, fontSize = 12.sp, maxLines = 1)
+                if (m.durationMs > 0L) {
+                    Text(text = TimeFormat.elapsed(m.durationMs), color = CcMuted, fontSize = 11.sp)
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    TimelineOps.tracksFor(m.kind).forEach { kind ->
+                        FilterChip(
+                            selected = false,
+                            onClick = { vm.addClip(m, kind, startMs) },
+                            label = { Text(stringResource(trackName(kind))) },
+                            leadingIcon = {
+                                Icon(trackIcon(kind), contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+    HintText(stringResource(R.string.add_note))
+}
 
 @Composable
 private fun ToolButton(icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {

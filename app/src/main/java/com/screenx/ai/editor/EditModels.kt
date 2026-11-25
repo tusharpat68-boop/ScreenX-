@@ -84,6 +84,9 @@ data class EditorUiState(
     val sourceBitrate: Int = 0,
     val segments: List<Segment> = emptyList(),
     val selectedId: Long? = null,
+    /** Extra tracks below the main video (additional video, overlay, image, audio). */
+    val tracks: List<Track> = emptyList(),
+    val selectedClipId: Long? = null,
     val filter: FilterPreset = FilterPreset.NONE,
     val adjust: Adjust = Adjust(),
     val texts: List<TextItem> = emptyList(),
