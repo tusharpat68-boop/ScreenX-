@@ -18,7 +18,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-class AudioCaptureException(message: String) : Exception(message)
 
 /**
  * Captures internal (playback) audio and/or the microphone, mixes them to stereo PCM,

@@ -11,8 +11,8 @@ object AudioCapabilities {
     fun availableSources(): List<AudioSource> =
         if (supportsInternalAudio) {
             listOf(
-                AudioSource.NONE, AudioSource.MIC,
-                AudioSource.INTERNAL, AudioSource.INTERNAL_AND_MIC
+                AudioSource.NONE, AudioSource.MICROPHONE,
+                AudioSource.INTERNAL, AudioSource.BOTH
             )
         } else {
             listOf(AudioSource.NONE, AudioSource.MIC)
