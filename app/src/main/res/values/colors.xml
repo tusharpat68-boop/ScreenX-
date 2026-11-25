@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="screenx_background">#080B14</color>
+    <color name="screenx_primary">#246BFD</color>
+    <color name="screenx_secondary">#8B5CF6</color>
+    <color name="screenx_accent">#22D3EE</color>
+    <color name="screenx_card">#121827</color>
+</resources>
