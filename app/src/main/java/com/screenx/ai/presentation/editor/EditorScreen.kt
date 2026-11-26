@@ -141,6 +141,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -175,6 +176,7 @@ import com.screenx.ai.editor.WaveformMath
 import com.screenx.ai.utils.TimeFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -269,6 +271,26 @@ private fun EditorContent(
     val exo = remember { ExoPlayer.Builder(context).build().apply { setSeekParameters(SeekParameters.EXACT) } }
     DisposableEffect(exo) { onDispose { exo.release() } }
 
+    // If the preview player fails, say why and try again; if it fails again, play without the preview effects.
+    val playerErrorText = stringResource(R.string.ed_player_error)
+    val errorCount = remember { intArrayOf(0) }
+    DisposableEffect(exo) {
+        val listener = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                errorCount[0]++
+                Toast.makeText(context, playerErrorText.format(error.errorCodeName), Toast.LENGTH_LONG).show()
+                if (errorCount[0] >= 2) exo.setVideoEffects(emptyList())
+                exo.prepare()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) errorCount[0] = 0
+            }
+        }
+        exo.addListener(listener)
+        onDispose { exo.removeListener(listener) }
+    }
+
     var loop by remember { mutableStateOf(false) }
     var full by remember { mutableStateOf(false) }
 
@@ -336,6 +358,7 @@ private fun EditorContent(
 
     LaunchedEffect(exo) {
         while (true) {
+          try {
             val list = segs
             val idx = exo.currentMediaItemIndex
             val s = list.getOrNull(idx)
@@ -351,7 +374,12 @@ private fun EditorContent(
                 exo.seekTo(0, 0L)
                 exo.play()
             }
-            delay(40)
+          } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+          } catch (e: Exception) {
+            // One bad reading must not stop the whole preview loop.
+          }
+          delay(40)
         }
     }
 
@@ -375,6 +403,7 @@ private fun EditorContent(
         }
         val list = segs
         if (list.isEmpty() || exo.mediaItemCount != list.size) return
+        if (exo.playbackState == Player.STATE_IDLE) exo.prepare()
         if (timelineMs >= EditTimeline.total(list) - 60L || exo.playbackState == Player.STATE_ENDED) {
             exo.seekTo(0, 0L)
         }
@@ -964,11 +993,24 @@ private fun Timeline(
         }
     }
     // A finger moving the strip moves the video.
+    // Seeks are limited to about 20 a second while a finger (or a fling) moves the strip, so the
+    // decoder is not flooded; the last position is always applied when the strip stops.
     LaunchedEffect(scroll, pxPerMs) {
-        snapshotFlow { scroll.value }.collect { v ->
+        snapshotFlow { scroll.value }.conflate().collect { v ->
             if (!followFlag[0] && scroll.isScrollInProgress) {
                 seekNow((v / pxPerMs).toLong().coerceIn(0L, totalNow))
+                delay(50)
             }
+        }
+    }
+    LaunchedEffect(scroll, pxPerMs) {
+        var wasMoving = false
+        snapshotFlow { scroll.isScrollInProgress }.collect { moving ->
+            // Only after a real finger move, not when the strip is moved by the player or by zooming.
+            if (!moving && wasMoving) {
+                seekNow((scroll.value / pxPerMs).toLong().coerceIn(0L, totalNow))
+            }
+            wasMoving = moving && !followFlag[0]
         }
     }
 

@@ -411,4 +411,5 @@
     <string name="adj_warmth">উষ্ণতা</string>
     <string name="adj_tint">টিন্ট</string>
     <string name="adj_hue">হিউ</string>
+    <string name="ed_player_error">প্রিভিউতে সমস্যা (%1$s)। আবার চেষ্টা করছি।</string>
 </resources>
