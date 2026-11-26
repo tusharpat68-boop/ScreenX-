@@ -49,7 +49,7 @@ class FloatingControls(
     // Button size: the chosen size, shrunk if needed so the expanded row fits the screen width.
     private val unit: Int = run {
         val desired = (when (config.sizeLevel) { 0 -> 40; 2 -> 64; else -> 52 } * density).toInt()
-        val slots = 5.4f + (if (onToggleCamera != null) 1f else 0f) + (if (onToggleDrawing != null) 1f else 0f)
+        val slots = 6.4f + (if (onToggleCamera != null) 1f else 0f) + (if (onToggleDrawing != null) 1f else 0f)
         val available = ctx.resources.displayMetrics.widthPixels - 24 * density
         minOf(desired, (available / slots).toInt())
     }
@@ -109,6 +109,8 @@ class FloatingControls(
         button(R.drawable.ic_draw_pen, R.string.overlay_drawing) { toggle() }
     }
     private val stop = button(R.drawable.ic_overlay_stop, R.string.action_stop) { onStop() }
+    // Minimize only collapses the toolbar back to the bubble; it never touches the recording.
+    private val minimize = button(R.drawable.ic_overlay_minimize, R.string.overlay_minimize) { setExpanded(false) }
     private val hide = button(R.drawable.ic_overlay_close, R.string.overlay_hide) { onHide() }
 
     private val blink = ObjectAnimator.ofFloat(dot, View.ALPHA, 1f, 0.25f).apply {
@@ -124,6 +126,7 @@ class FloatingControls(
         cameraButton?.let { container.addView(it) }
         drawButton?.let { container.addView(it) }
         container.addView(stop)
+        container.addView(minimize)
         container.addView(hide)
         applyExpanded()
     }
@@ -180,6 +183,7 @@ class FloatingControls(
         cameraButton?.visibility = v
         drawButton?.visibility = v
         stop.visibility = v
+        minimize.visibility = v
         hide.visibility = v
     }
 

@@ -13,6 +13,7 @@ import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
 import androidx.media3.effect.Crop
 import androidx.media3.effect.HslAdjustment
+import androidx.media3.effect.MatrixTransformation
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
@@ -34,15 +35,27 @@ class LookSettings(
     val crop: CropPreset,
     val filter: FilterPreset,
     val adjust: Adjust,
-    val texts: List<TextItem>
+    val texts: List<TextItem>,
+    val flipH: Boolean = false,
+    val flipV: Boolean = false
 )
 
 @OptIn(UnstableApi::class)
 object EditEffects {
 
     /** Effects for the live preview: no downscaling. */
-    fun preview(width: Int, height: Int, look: LookSettings): List<Effect> =
-        build(width, height, look, null).effects
+    fun preview(width: Int, height: Int, look: LookSettings, fitToCanvas: Boolean = false): List<Effect> =
+        (if (fitToCanvas) listOf(fitToCanvas(width, height)) else emptyList()) + build(width, height, look, null).effects
+
+    /** Scales a clip of another size to fit inside the project's picture size (black bars, no stretching). */
+    fun fitToCanvas(width: Int, height: Int): Effect =
+        Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT)
+
+    /** The picture size of the result (after rotation and crop, before any downscaling). */
+    fun outputSize(width: Int, height: Int, look: LookSettings): Pair<Int, Int> {
+        val plan = build(width, height, look, null)
+        return plan.outWidth to plan.outHeight
+    }
 
     fun exportPlan(width: Int, height: Int, look: LookSettings, quality: ExportQuality): ExportPlan =
         build(width, height, look, quality)
@@ -89,6 +102,12 @@ object EditEffects {
             effects.add(ScaleAndRotateTransformation.Builder().setRotationDegrees(ccw).build())
         }
 
+        if (look.flipH || look.flipV) {
+            val sx = if (look.flipH) -1f else 1f
+            val sy = if (look.flipV) -1f else 1f
+            effects.add(MatrixTransformation { android.graphics.Matrix().apply { postScale(sx, sy) } })
+        }
+
         effects.addAll(colorEffects(look.filter, look.adjust))
 
         // Text is drawn at the size of the cropped frame, before any downscaling.
@@ -115,35 +134,26 @@ object EditEffects {
 
     private fun colorEffects(filter: FilterPreset, adjust: Adjust): List<Effect> {
         val out = ArrayList<Effect>()
-        when (filter) {
-            FilterPreset.NONE -> Unit
-            FilterPreset.VIVID -> {
-                out.add(HslAdjustment.Builder().adjustSaturation(35f).build())
-                out.add(Contrast(0.12f))
-            }
-            FilterPreset.WARM -> {
-                out.add(RgbAdjustment.Builder().setRedScale(1.12f).setBlueScale(0.88f).build())
-            }
-            FilterPreset.COOL -> {
-                out.add(RgbAdjustment.Builder().setRedScale(0.9f).setBlueScale(1.12f).build())
-            }
-            FilterPreset.VINTAGE -> {
-                out.add(HslAdjustment.Builder().adjustSaturation(-30f).build())
-                out.add(RgbAdjustment.Builder().setRedScale(1.08f).setBlueScale(0.85f).build())
-                out.add(Contrast(-0.05f))
-            }
-            FilterPreset.FADE -> {
-                out.add(HslAdjustment.Builder().adjustSaturation(-15f).build())
-                out.add(Brightness(0.06f))
-                out.add(Contrast(-0.18f))
-            }
-            FilterPreset.BW -> out.add(RgbFilter.createGrayscaleFilter())
-            FilterPreset.NEGATIVE -> out.add(RgbFilter.createInvertedFilter())
+        val p = FilterMath.params(filter, adjust.filterStrength)
+        if (p.satPct != 0f) out.add(HslAdjustment.Builder().adjustSaturation(p.satPct).build())
+        if (p.r != 1f || p.g != 1f || p.b != 1f) {
+            out.add(RgbAdjustment.Builder().setRedScale(p.r).setGreenScale(p.g).setBlueScale(p.b).build())
         }
+        if (p.brightness != 0f) out.add(Brightness(p.brightness))
+        if (p.contrast != 0f) out.add(Contrast(p.contrast))
+        if (p.invert) out.add(RgbFilter.createInvertedFilter())
+
         if (adjust.brightness != 0f) out.add(Brightness(adjust.brightness.coerceIn(-1f, 1f) * 0.5f))
         if (adjust.contrast != 0f) out.add(Contrast(adjust.contrast.coerceIn(-1f, 1f)))
-        if (adjust.saturation != 0f) {
-            out.add(HslAdjustment.Builder().adjustSaturation(adjust.saturation.coerceIn(-1f, 1f) * 100f).build())
+        if (adjust.saturation != 0f || adjust.hue != 0f) {
+            val hsl = HslAdjustment.Builder()
+            if (adjust.hue != 0f) hsl.adjustHue(adjust.hue.coerceIn(-1f, 1f) * 180f)
+            if (adjust.saturation != 0f) hsl.adjustSaturation(adjust.saturation.coerceIn(-1f, 1f) * 100f)
+            out.add(hsl.build())
+        }
+        if (adjust.warmth != 0f || adjust.tint != 0f) {
+            val k = FilterMath.warmthScales(adjust.warmth, adjust.tint)
+            out.add(RgbAdjustment.Builder().setRedScale(k[0]).setGreenScale(k[1]).setBlueScale(k[2]).build())
         }
         return out
     }
