@@ -275,17 +275,21 @@ private fun EditorContent(
     // If the preview player fails, say why and try again; if it fails again, play without the preview effects.
     val playerErrorText = stringResource(R.string.ed_player_error)
     val errorCount = remember { intArrayOf(0) }
+    var effectsRetry by remember { mutableIntStateOf(0) }
+    var effectsDisabled by remember { mutableStateOf(false) }
     DisposableEffect(exo) {
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 errorCount[0]++
                 Toast.makeText(context, playerErrorText.format(error.errorCodeName), Toast.LENGTH_LONG).show()
-                if (errorCount[0] >= 2) exo.setVideoEffects(emptyList())
+                // Take the effects off so the picture comes back, then put them back after a moment.
+                // If it keeps failing (a slow phone), the preview stays without effects (export is not affected).
+                exo.setVideoEffects(emptyList())
+                if (errorCount[0] >= 3) effectsDisabled = true else effectsRetry++
                 exo.prepare()
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) errorCount[0] = 0
             }
         }
         exo.addListener(listener)
@@ -307,7 +311,12 @@ private fun EditorContent(
             mixedSizes
         )
     }
-    LaunchedEffect(previewEffects) { exo.setVideoEffects(previewEffects) }
+    // Changing the effects restarts the picture pipeline, which is heavy. While a slider is dragged
+    // the effects change dozens of times a second, so they are applied once the changes stop.
+    LaunchedEffect(previewEffects, effectsRetry, effectsDisabled) {
+        delay(300)
+        exo.setVideoEffects(if (effectsDisabled) emptyList() else previewEffects)
+    }
 
     // The preview frame has the shape of the result, so overlays line up with what will be exported.
     val frameAspect = remember(ui.width, ui.height, ui.rotationCw, ui.crop) {
