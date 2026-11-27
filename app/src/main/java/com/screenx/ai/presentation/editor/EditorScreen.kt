@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -994,23 +995,22 @@ private fun Timeline(
     }
     // A finger moving the strip moves the video.
     // Seeks are limited to about 20 a second while a finger (or a fling) moves the strip, so the
-    // decoder is not flooded; the last position is always applied when the strip stops.
+    // decoder is not flooded.
+    // "A finger moved the strip" is known from the drag itself. Guessing it from the scroll state
+    // mistook the strip following the playhead for a finger, which paused the video again and again.
+    val userScrolling = remember { BooleanArray(1) }
+    LaunchedEffect(scroll) {
+        scroll.interactionSource.interactions.collect { if (it is DragInteraction.Start) userScrolling[0] = true }
+    }
+    LaunchedEffect(scroll) {
+        snapshotFlow { scroll.isScrollInProgress }.collect { if (!it) userScrolling[0] = false }
+    }
     LaunchedEffect(scroll, pxPerMs) {
         snapshotFlow { scroll.value }.conflate().collect { v ->
-            if (!followFlag[0] && scroll.isScrollInProgress) {
+            if (userScrolling[0]) {
                 seekNow((v / pxPerMs).toLong().coerceIn(0L, totalNow))
                 delay(50)
             }
-        }
-    }
-    LaunchedEffect(scroll, pxPerMs) {
-        var wasMoving = false
-        snapshotFlow { scroll.isScrollInProgress }.collect { moving ->
-            // Only after a real finger move, not when the strip is moved by the player or by zooming.
-            if (!moving && wasMoving) {
-                seekNow((scroll.value / pxPerMs).toLong().coerceIn(0L, totalNow))
-            }
-            wasMoving = moving && !followFlag[0]
         }
     }
 
